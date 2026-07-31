@@ -13,6 +13,7 @@ import { parseFrontmatterAndLinks } from "./parse.js";
 import type { VaultBackend, NoteInfo, NoteListing } from "./vault-backend.js";
 import { deriveContent } from "./index-sync.js";
 import { classifyIds, type IdFormat } from "./id-format.js";
+import { validateVaultPath } from "./path-validation.js";
 
 export interface VaultConfig {
     couchdbUrl: string;
@@ -200,9 +201,7 @@ export class Vault implements VaultBackend {
     }
 
     private validatePath(path: string): void {
-        if (!path || path.startsWith("/") || path.includes("\0") || path.includes("..") || path.length > 1000) {
-            throw new Error("Invalid path");
-        }
+        validateVaultPath(path);
     }
 
     async readNote(path: string): Promise<string | null> {
