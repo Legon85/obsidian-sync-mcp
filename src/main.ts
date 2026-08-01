@@ -7,6 +7,7 @@ import { setGlobalLogFunction, LEVEL_INFO } from "octagonal-wheels/common/logger
 import { mountPasswordAuth } from "./auth.js";
 import { SearchIndex } from "./search.js";
 import { applyIndexChange } from "./index-sync.js";
+import { diffIndexPaths } from "./index-reconcile.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
 import { parseWriteFolders } from "./write-scope.js";
@@ -145,6 +146,55 @@ async function rebuildIndex() {
             }, onBatch);
             searchIndex.since = newSince;
         }
+
+        /*
+         * The persisted metadata index may survive legacy or missed CouchDB
+         * delete events. Compare it with an authoritative metadata-only Vault
+         * listing before list_notes is allowed to rely on it.
+         */
+        const authoritativeNotes =
+            await vault.listNotesWithMtime();
+
+        const pathDiff = diffIndexPaths(
+            searchIndex.listWithMtime(),
+            authoritativeNotes,
+        );
+
+        for (const stalePath of pathDiff.stalePaths) {
+            searchIndex.remove(stalePath);
+        }
+
+        let restoredNotes = 0;
+        let unreadableMissingNotes = 0;
+
+        for (const note of pathDiff.missingNotes) {
+            const content = await vault.readNote(note.path);
+
+            if (content !== null) {
+                searchIndex.update(
+                    note.path,
+                    content,
+                    note.mtime,
+                );
+                restoredNotes++;
+            } else {
+                unreadableMissingNotes++;
+            }
+        }
+
+        if (
+            pathDiff.stalePaths.length > 0 ||
+            restoredNotes > 0 ||
+            unreadableMissingNotes > 0
+        ) {
+            console.log(
+                `Search index reconciled: ` +
+                `${pathDiff.stalePaths.length} stale removed, ` +
+                `${restoredNotes} missing restored, ` +
+                `${unreadableMissingNotes} missing unreadable.`,
+            );
+        }
+
         if (changes > 0) {
             console.log(`Search index synced: ${changes} changes in ${((performance.now() - start) / 1000).toFixed(1)}s (${searchIndex.size} notes).`);
         } else {
