@@ -95,7 +95,10 @@ export class LocalVault implements VaultBackend {
             return {
                 path,
                 size: s.size,
-                ctime: s.birthtimeMs,
+                // Some Linux/container filesystems report birthtimeMs=0
+                // when file creation time is unavailable. Fall back to ctimeMs
+                // instead of exposing an invalid Unix-epoch creation time.
+                ctime: s.birthtimeMs > 0 ? s.birthtimeMs : s.ctimeMs,
                 mtime: s.mtimeMs,
                 ...parseFrontmatterAndLinks(content),
             };
