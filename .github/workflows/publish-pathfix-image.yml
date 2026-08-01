@@ -46,9 +46,7 @@ jobs:
             bash -lc '
               set -Eeuo pipefail
               npm ci
-              node --import tsx \
-                --test \
-                src/vault-path-validation.test.ts
+              npm test
               npm run build
             '
 
