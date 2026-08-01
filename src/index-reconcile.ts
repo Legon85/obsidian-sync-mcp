@@ -21,7 +21,6 @@ export interface ReconciliationIndex {
 
 export interface ReconciliationVault {
     readNote(path: string): Promise<string | null>;
-    getMetadata(path: string): Promise<unknown | null>;
 }
 
 export interface ReconciliationResult {
@@ -68,8 +67,9 @@ export function diffIndexPaths(
  * A path can still have a metadata document while its body/chunks are no
  * longer readable. Such paths must not remain visible through list_notes.
  *
- * Existing empty notes are preserved: if readNote() returns null but
- * getMetadata() still succeeds, the note is treated as an empty file.
+ * Existing empty notes are preserved because readNote() returns an empty
+ * string for a valid zero-byte note. A null result means the note cannot be
+ * read and therefore must not remain visible through list_notes.
  */
 export async function reconcileIndexPaths(
     index: ReconciliationIndex,
@@ -116,27 +116,19 @@ export async function reconcileIndexPaths(
         let content = await vault.readNote(note.path);
 
         if (content === null) {
-            const metadata =
-                await vault.getMetadata(note.path);
-
-            if (metadata !== null) {
-                // Existing zero-byte or body-less note.
-                content = "";
-            } else {
-                if (indexedPaths.has(note.path)) {
-                    index.remove(note.path);
-                    staleRemoved++;
-                } else if (missingPaths.has(note.path)) {
-                    missingUnreadable++;
-                }
-
-                onProgress?.(
-                    position + 1,
-                    authoritativeNotes.length,
-                );
-
-                continue;
+            if (indexedPaths.has(note.path)) {
+                index.remove(note.path);
+                staleRemoved++;
+            } else if (missingPaths.has(note.path)) {
+                missingUnreadable++;
             }
+
+            onProgress?.(
+                position + 1,
+                authoritativeNotes.length,
+            );
+
+            continue;
         }
 
         if (missingPaths.has(note.path)) {

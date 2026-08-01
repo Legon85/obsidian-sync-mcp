@@ -133,15 +133,8 @@ test(
                 ["active.md", "active"],
                 ["ghost.md", null],
                 ["new.md", "new"],
-                ["empty.md", null],
+                ["empty.md", ""],
                 ["missing.md", null],
-            ]);
-
-        const metadataPresent =
-            new Set([
-                "active.md",
-                "new.md",
-                "empty.md",
             ]);
 
         const progress: Array<[number, number]> = [];
@@ -151,12 +144,6 @@ test(
             {
                 async readNote(path) {
                     return contents.get(path) ?? null;
-                },
-
-                async getMetadata(path) {
-                    return metadataPresent.has(path)
-                        ? { path }
-                        : null;
                 },
             },
             [
