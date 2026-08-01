@@ -13,18 +13,24 @@ export interface IndexPathDiff {
     missingNotes: AuthoritativeNotePath[];
 }
 
-/**
- * Compare the persisted metadata index with the authoritative Vault listing.
- *
- * stalePaths:
- *   paths still present in SearchIndex but absent from the Vault.
- *
- * missingNotes:
- *   paths present in the Vault but absent from SearchIndex.
- *
- * Paths are treated as opaque Vault-relative strings. Consecutive dots inside
- * valid filenames are therefore not interpreted as traversal.
- */
+export interface ReconciliationIndex {
+    listWithMtime(): IndexedNotePath[];
+    update(path: string, content: string, mtime?: number): void;
+    remove(path: string): void;
+}
+
+export interface ReconciliationVault {
+    readNote(path: string): Promise<string | null>;
+    getMetadata(path: string): Promise<unknown | null>;
+}
+
+export interface ReconciliationResult {
+    staleRemoved: number;
+    missingRestored: number;
+    missingUnreadable: number;
+    verifiedNotes: number;
+}
+
 export function diffIndexPaths(
     indexedNotes: Iterable<IndexedNotePath>,
     authoritativeNotes: Iterable<AuthoritativeNotePath>,
@@ -35,22 +41,124 @@ export function diffIndexPaths(
         indexed.add(note.path);
     }
 
-    const authoritative = new Map<string, AuthoritativeNotePath>();
+    const authoritative =
+        new Map<string, AuthoritativeNotePath>();
 
     for (const note of authoritativeNotes) {
         authoritative.set(note.path, note);
     }
 
-    const stalePaths = [...indexed]
-        .filter((path) => !authoritative.has(path))
-        .sort();
+    return {
+        stalePaths: [...indexed]
+            .filter((path) => !authoritative.has(path))
+            .sort(),
 
-    const missingNotes = [...authoritative.values()]
-        .filter((note) => !indexed.has(note.path))
-        .sort((a, b) => a.path.localeCompare(b.path));
+        missingNotes: [...authoritative.values()]
+            .filter((note) => !indexed.has(note.path))
+            .sort((a, b) => a.path.localeCompare(b.path)),
+    };
+}
+
+/**
+ * Reconcile the persisted metadata index with both:
+ *
+ * 1. the metadata-only Vault listing;
+ * 2. the actual readability of every listed note.
+ *
+ * A path can still have a metadata document while its body/chunks are no
+ * longer readable. Such paths must not remain visible through list_notes.
+ *
+ * Existing empty notes are preserved: if readNote() returns null but
+ * getMetadata() still succeeds, the note is treated as an empty file.
+ */
+export async function reconcileIndexPaths(
+    index: ReconciliationIndex,
+    vault: ReconciliationVault,
+    authoritativeInput: Iterable<AuthoritativeNotePath>,
+    onProgress?: (processed: number, total: number) => void,
+): Promise<ReconciliationResult> {
+    const authoritativeMap =
+        new Map<string, AuthoritativeNotePath>();
+
+    for (const note of authoritativeInput) {
+        authoritativeMap.set(note.path, note);
+    }
+
+    const authoritativeNotes =
+        [...authoritativeMap.values()]
+            .sort((a, b) => a.path.localeCompare(b.path));
+
+    const indexedNotes = index.listWithMtime();
+
+    const indexedPaths =
+        new Set(indexedNotes.map((note) => note.path));
+
+    const pathDiff =
+        diffIndexPaths(indexedNotes, authoritativeNotes);
+
+    for (const path of pathDiff.stalePaths) {
+        index.remove(path);
+    }
+
+    const missingPaths =
+        new Set(pathDiff.missingNotes.map((note) => note.path));
+
+    let staleRemoved = pathDiff.stalePaths.length;
+    let missingRestored = 0;
+    let missingUnreadable = 0;
+
+    for (
+        let position = 0;
+        position < authoritativeNotes.length;
+        position++
+    ) {
+        const note = authoritativeNotes[position];
+        let content = await vault.readNote(note.path);
+
+        if (content === null) {
+            const metadata =
+                await vault.getMetadata(note.path);
+
+            if (metadata !== null) {
+                // Existing zero-byte or body-less note.
+                content = "";
+            } else {
+                if (indexedPaths.has(note.path)) {
+                    index.remove(note.path);
+                    staleRemoved++;
+                } else if (missingPaths.has(note.path)) {
+                    missingUnreadable++;
+                }
+
+                onProgress?.(
+                    position + 1,
+                    authoritativeNotes.length,
+                );
+
+                continue;
+            }
+        }
+
+        if (missingPaths.has(note.path)) {
+            index.update(
+                note.path,
+                content,
+                note.mtime,
+            );
+
+            missingRestored++;
+        }
+
+        onProgress?.(
+            position + 1,
+            authoritativeNotes.length,
+        );
+    }
 
     return {
-        stalePaths,
-        missingNotes,
+        staleRemoved,
+        missingRestored,
+        missingUnreadable,
+        verifiedNotes: authoritativeNotes.length,
     };
 }

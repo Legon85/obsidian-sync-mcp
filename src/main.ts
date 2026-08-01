@@ -7,7 +7,7 @@ import { setGlobalLogFunction, LEVEL_INFO } from "octagonal-wheels/common/logger
 import { mountPasswordAuth } from "./auth.js";
 import { SearchIndex } from "./search.js";
 import { applyIndexChange } from "./index-sync.js";
-import { diffIndexPaths } from "./index-reconcile.js";
+import { reconcileIndexPaths } from "./index-reconcile.js";
 import { buildAllowedHosts, isHostAllowed, isOriginAllowed } from "./host-guard.js";
 import { registerTools } from "./tools.js";
 import { parseWriteFolders } from "./write-scope.js";
@@ -148,50 +148,44 @@ async function rebuildIndex() {
         }
 
         /*
-         * The persisted metadata index may survive legacy or missed CouchDB
-         * delete events. Compare it with an authoritative metadata-only Vault
-         * listing before list_notes is allowed to rely on it.
+         * A metadata document may still exist even when its body/chunks can
+         * no longer be read. Verify every metadata-listed note before exposing
+         * the persisted index through list_notes.
          */
         const authoritativeNotes =
             await vault.listNotesWithMtime();
 
-        const pathDiff = diffIndexPaths(
-            searchIndex.listWithMtime(),
-            authoritativeNotes,
-        );
-
-        for (const stalePath of pathDiff.stalePaths) {
-            searchIndex.remove(stalePath);
-        }
-
-        let restoredNotes = 0;
-        let unreadableMissingNotes = 0;
-
-        for (const note of pathDiff.missingNotes) {
-            const content = await vault.readNote(note.path);
-
-            if (content !== null) {
-                searchIndex.update(
-                    note.path,
-                    content,
-                    note.mtime,
-                );
-                restoredNotes++;
-            } else {
-                unreadableMissingNotes++;
-            }
-        }
+        const reconciliation =
+            await reconcileIndexPaths(
+                searchIndex,
+                vault,
+                authoritativeNotes,
+                (processed, total) => {
+                    if (
+                        total > 100 &&
+                        (
+                            processed % 100 === 0 ||
+                            processed === total
+                        )
+                    ) {
+                        console.log(
+                            `  reconciliation: ` +
+                            `${processed}/${total} notes verified.`,
+                        );
+                    }
+                },
+            );
 
         if (
-            pathDiff.stalePaths.length > 0 ||
-            restoredNotes > 0 ||
-            unreadableMissingNotes > 0
+            reconciliation.staleRemoved > 0 ||
+            reconciliation.missingRestored > 0 ||
+            reconciliation.missingUnreadable > 0
         ) {
             console.log(
                 `Search index reconciled: ` +
-                `${pathDiff.stalePaths.length} stale removed, ` +
-                `${restoredNotes} missing restored, ` +
-                `${unreadableMissingNotes} missing unreadable.`,
+                `${reconciliation.staleRemoved} stale removed, ` +
+                `${reconciliation.missingRestored} missing restored, ` +
+                `${reconciliation.missingUnreadable} missing unreadable.`,
             );
         }
 
