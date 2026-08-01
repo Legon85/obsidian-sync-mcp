@@ -110,7 +110,9 @@ if (debugLogging) {
     console.log(`[debug] Persisted metadata: ${searchIndex.size} notes, since: ${searchIndex.since || "(none)"}`);
 }
 
-// Sync metadata in background (server starts immediately)
+// Complete initial metadata synchronization before attaching the live
+// CouchDB watcher or starting the MCP server. Both reconciliation and the
+// watcher mutate the same SearchIndex and must not run concurrently.
 async function rebuildIndex() {
     const start = performance.now();
 
@@ -217,8 +219,9 @@ async function rebuildIndex() {
     }
     await searchIndex.saveToDisk();
 }
-// Fire and forget — server starts while index builds
-rebuildIndex().catch((err) => console.error("Index rebuild failed:", err));
+// Catch-up establishes the sequence used by watchChanges(), and
+// reconciliation must finish before live changes can mutate SearchIndex.
+await rebuildIndex();
 
 // --- Watch for external changes ---
 let fsWatcher: ReturnType<typeof watch> | null = null;
